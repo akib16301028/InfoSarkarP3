@@ -1,8 +1,7 @@
 import streamlit as st
 import pandas as pd
-from io import StringIO
 
-st.title("NE & Port Matching Checker")
+st.title("NE Pair & Interface Matching Checker")
 
 uploaded_file = st.file_uploader("Upload Excel file with Sheet1 and Sheet2", type=["xlsx", "xls"])
 
@@ -12,29 +11,29 @@ if uploaded_file:
         sheet1 = pd.read_excel(uploaded_file, sheet_name=0)
         sheet2 = pd.read_excel(uploaded_file, sheet_name=1)
         
-        # Clean data - replace N/A values
+        # Clean data
         sheet1 = sheet1.replace(['N/A', 'NA', 'n/a', 'N/a', ''], pd.NA)
         sheet2 = sheet2.replace(['N/A', 'NA', 'n/a', 'N/a', ''], pd.NA)
         
-        # Check required columns in both sheets
-        required_columns = ['Source NE', 'Destination NE', 'Source Port', 'Destination Port']
-        if not all(col in sheet1.columns and col in sheet2.columns for col in required_columns):
-            st.error(f"Both sheets must have these columns: {required_columns}")
+        # Check required columns
+        required_cols = ['Source NE', 'Destination NE', 'Source Port', 'Destination Port']
+        if not all(col in sheet1.columns and col in sheet2.columns for col in required_cols):
+            st.error(f"Both sheets need these columns: {required_cols}")
             st.stop()
-            
-        # Create comparison dataframe starting with Sheet1 data
-        comparison_df = sheet1[required_columns].copy()
         
-        # Add Status column - check if NE pairs match
-        comparison_df['Status'] = sheet1.apply(
+        # Create comparison DataFrame from Sheet1
+        comparison = sheet1[required_cols].copy()
+        
+        # Add Status column (Matched if NE pair exists in Sheet2)
+        comparison['Status'] = comparison.apply(
             lambda row: 'Matched' if ((sheet2['Source NE'] == row['Source NE']) & 
                                      (sheet2['Destination NE'] == row['Destination NE'])).any()
-                        else 'Mismatched', 
+                        else 'Mismatched',
             axis=1
         )
         
-        # For matched rows, compare ports and show Sheet2 ports if different
-        comparison_df['Sheet2 Ports'] = ''
+        # Add Sheet2 Interface Info (ONLY when interfaces don't match)
+        comparison['Sheet2 Interfaces'] = ''
         
         for idx, row in sheet1.iterrows():
             # Find matching row in Sheet2
@@ -44,37 +43,36 @@ if uploaded_file:
             ]
             
             if not match.empty:
-                sheet2_ports = f"Src: {match.iloc[0]['Source Port']}, Dst: {match.iloc[0]['Destination Port']}"
-                
-                # Check if ports match
-                port_match = (row['Source Port'] == match.iloc[0]['Source Port']) and \
-                             (row['Destination Port'] == match.iloc[0]['Destination Port'])
-                
-                if not port_match:
-                    comparison_df.at[idx, 'Sheet2 Ports'] = sheet2_ports
+                sheet2_row = match.iloc[0]
+                # Only show Sheet2 interfaces if they don't match
+                if (row['Source Port'] != sheet2_row['Source Port']) or \
+                   (row['Destination Port'] != sheet2_row['Destination Port']):
+                    comparison.at[idx, 'Sheet2 Interfaces'] = \
+                        f"Src: {sheet2_row['Source Port']}, Dst: {sheet2_row['Destination Port']}"
         
         # Style function to highlight mismatches
         def highlight_mismatches(row):
-            styles = [''] * len(row)
+            styles = [''] * len(comparison.columns)
             if row['Status'] == 'Mismatched':
-                styles[0] = 'background-color: red'  # Source NE
-                styles[1] = 'background-color: red'  # Destination NE
+                # Highlight Source NE and Destination NE in red
+                styles[0] = 'background-color: #FFCCCB'  # Source NE
+                styles[1] = 'background-color: #FFCCCB'  # Destination NE
+            elif row['Sheet2 Interfaces'] != '':
+                # Highlight interface columns in yellow when ports don't match
+                styles[2] = 'background-color: #FFFF99'  # Source Port
+                styles[3] = 'background-color: #FFFF99'  # Destination Port
             return styles
         
-        # Apply styling
-        styled_df = comparison_df.style.apply(highlight_mismatches, axis=1)
-        
-        st.write("### Comparison Results:")
-        st.dataframe(styled_df, use_container_width=True)
+        # Apply styling and display
+        st.dataframe(
+            comparison.style.apply(highlight_mismatches, axis=1),
+            use_container_width=True,
+            height=400
+        )
         
         # Download button
-        csv = comparison_df.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            "Download Comparison Results",
-            csv,
-            "ne_port_comparison.csv",
-            "text/csv"
-        )
+        csv = comparison.to_csv(index=False).encode('utf-8')
+        st.download_button("Download Results", csv, "ne_interface_comparison.csv", "text/csv")
         
     except Exception as e:
         st.error(f"Error processing file: {str(e)}")
