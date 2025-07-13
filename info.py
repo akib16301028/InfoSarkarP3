@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 
-st.title("NE Pair & Interface Matching Checker")
+st.title("NE Pair Missing Links Analyzer")
 
 uploaded_file = st.file_uploader("Upload Excel file with Sheet1 and Sheet2", type=["xlsx", "xls"])
 
@@ -21,58 +21,60 @@ if uploaded_file:
             st.error(f"Both sheets need these columns: {required_cols}")
             st.stop()
         
-        # Create comparison DataFrame from Sheet1
-        comparison = sheet1[required_cols].copy()
+        # Function to create normalized NE pair (sorted to treat A→B and B→A as same)
+        def normalize_ne_pair(source, dest):
+            return tuple(sorted([str(source), str(dest)]))
         
-        # Add Status column (Matched if NE pair exists in Sheet2)
-        comparison['Status'] = comparison.apply(
-            lambda row: 'Matched' if ((sheet2['Source NE'] == row['Source NE']) & 
-                                     (sheet2['Destination NE'] == row['Destination NE'])).any()
-                        else 'Mismatched',
-            axis=1
-        )
+        # Add normalized NE pairs to both sheets
+        sheet1['NE_Pair'] = sheet1.apply(lambda x: normalize_ne_pair(x['Source NE'], x['Destination NE']), axis=1)
+        sheet2['NE_Pair'] = sheet2.apply(lambda x: normalize_ne_pair(x['Source NE'], x['Destination NE']), axis=1)
         
-        # Add Sheet2 Interface Info (ONLY when interfaces don't match)
-        comparison['Sheet2 Interfaces'] = ''
+        # Find entries in Sheet2 that are missing from Sheet1
+        missing_in_sheet1 = sheet2[~sheet2['NE_Pair'].isin(sheet1['NE_Pair'])]
         
-        for idx, row in sheet1.iterrows():
-            # Find matching row in Sheet2
-            match = sheet2[
-                (sheet2['Source NE'] == row['Source NE']) & 
-                (sheet2['Destination NE'] == row['Destination NE'])
-            ]
+        if not missing_in_sheet1.empty:
+            st.warning(f"Found {len(missing_in_sheet1)} connections in Sheet2 that are missing in Sheet1")
             
-            if not match.empty:
-                sheet2_row = match.iloc[0]
-                # Only show Sheet2 interfaces if they don't match
-                if (row['Source Port'] != sheet2_row['Source Port']) or \
-                   (row['Destination Port'] != sheet2_row['Destination Port']):
-                    comparison.at[idx, 'Sheet2 Interfaces'] = \
-                        f"Src: {sheet2_row['Source Port']}, Dst: {sheet2_row['Destination Port']}"
-        
-        # Style function to highlight mismatches
-        def highlight_mismatches(row):
-            styles = [''] * len(comparison.columns)
-            if row['Status'] == 'Mismatched':
-                # Highlight Source NE and Destination NE in red
-                styles[0] = 'background-color: #FFCCCB'  # Source NE
-                styles[1] = 'background-color: #FFCCCB'  # Destination NE
-            elif row['Sheet2 Interfaces'] != '':
-                # Highlight interface columns in yellow when ports don't match
-                styles[2] = 'background-color: #FFFF99'  # Source Port
-                styles[3] = 'background-color: #FFFF99'  # Destination Port
-            return styles
-        
-        # Apply styling and display
-        st.dataframe(
-            comparison.style.apply(highlight_mismatches, axis=1),
-            use_container_width=True,
-            height=400
-        )
-        
-        # Download button
-        csv = comparison.to_csv(index=False).encode('utf-8')
-        st.download_button("Download Results", csv, "ne_interface_comparison.csv", "text/csv")
-        
+            # Prepare the report of missing connections
+            missing_report = missing_in_sheet1[required_cols].copy()
+            missing_report['Status'] = 'Missing in Sheet1'
+            
+            # Highlight all rows in red
+            def highlight_missing(row):
+                return ['background-color: #FFCCCB'] * len(row)
+            
+            st.dataframe(
+                missing_report.style.apply(highlight_missing, axis=1),
+                use_container_width=True,
+                height=400
+            )
+            
+            # Generate recommended additions for Sheet1
+            st.subheader("Recommended additions for Sheet1")
+            additions = missing_in_sheet1[required_cols].copy()
+            st.dataframe(additions)
+            
+            # Download buttons
+            csv_missing = missing_report.to_csv(index=False).encode('utf-8')
+            csv_additions = additions.to_csv(index=False).encode('utf-8')
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.download_button(
+                    "Download Missing Report",
+                    csv_missing,
+                    "missing_in_sheet1.csv",
+                    "text/csv"
+                )
+            with col2:
+                st.download_button(
+                    "Download Recommended Additions",
+                    csv_additions,
+                    "recommended_additions.csv",
+                    "text/csv"
+                )
+        else:
+            st.success("All Sheet2 connections are already present in Sheet1!")
+            
     except Exception as e:
         st.error(f"Error processing file: {str(e)}")
