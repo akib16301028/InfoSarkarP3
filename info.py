@@ -4,124 +4,77 @@ from io import StringIO
 
 st.title("NE & Port Matching Checker")
 
-uploaded_file = st.file_uploader("Upload Excel or CSV file", type=["xlsx", "xls", "csv"])
+uploaded_file = st.file_uploader("Upload Excel file with Sheet1 and Sheet2", type=["xlsx", "xls"])
 
 if uploaded_file:
     try:
-        # Read the uploaded file
-        if uploaded_file.name.endswith(('.xlsx', '.xls')):
-            df = pd.read_excel(uploaded_file, sheet_name=0)
-        else:
-            df = pd.read_csv(uploaded_file)
-            
-        # Clean the data - replace N/A and empty strings with NaN
-        df = df.replace(['N/A', 'NA', 'n/a', 'N/a', ''], pd.NA)
+        # Read both sheets
+        sheet1 = pd.read_excel(uploaded_file, sheet_name=0)
+        sheet2 = pd.read_excel(uploaded_file, sheet_name=1)
         
-        # Check required columns
+        # Clean data - replace N/A values
+        sheet1 = sheet1.replace(['N/A', 'NA', 'n/a', 'N/a', ''], pd.NA)
+        sheet2 = sheet2.replace(['N/A', 'NA', 'n/a', 'N/a', ''], pd.NA)
+        
+        # Check required columns in both sheets
         required_columns = ['Source NE', 'Destination NE', 'Source Port', 'Destination Port']
-        if not all(col in df.columns for col in required_columns):
-            st.error(f"Missing required columns. Needed: {required_columns}")
+        if not all(col in sheet1.columns and col in sheet2.columns for col in required_columns):
+            st.error(f"Both sheets must have these columns: {required_columns}")
             st.stop()
             
-        st.write("### First 10 rows of the uploaded data:")
-        st.dataframe(df.head(10))
+        # Create comparison dataframe starting with Sheet1 data
+        comparison_df = sheet1[required_columns].copy()
         
-        # Option 1: Compare with another file
-        st.subheader("Option 1: Compare with another file")
-        compare_file = st.file_uploader("Upload file to compare against", type=["xlsx", "xls", "csv"])
+        # Add Status column - check if NE pairs match
+        comparison_df['Status'] = sheet1.apply(
+            lambda row: 'Matched' if ((sheet2['Source NE'] == row['Source NE']) & 
+                                     (sheet2['Destination NE'] == row['Destination NE'])).any()
+                        else 'Mismatched', 
+            axis=1
+        )
         
-        if compare_file:
-            try:
-                if compare_file.name.endswith(('.xlsx', '.xls')):
-                    df_compare = pd.read_excel(compare_file, sheet_name=0)
-                else:
-                    df_compare = pd.read_csv(compare_file)
-                    
-                df_compare = df_compare.replace(['N/A', 'NA', 'n/a', 'N/a', ''], pd.NA)
-                
-                # Check if both dataframes have the same columns
-                if not all(col in df_compare.columns for col in required_columns):
-                    st.error("Comparison file missing required columns")
-                    st.stop()
-                    
-                # Merge the two dataframes for comparison
-                merged = df.merge(
-                    df_compare,
-                    on=['Source NE', 'Destination NE'],
-                    how='outer',
-                    suffixes=('_Original', '_Compare'),
-                    indicator=True
-                )
-                
-                # Create comparison results
-                results = pd.DataFrame({
-                    'Source NE': merged['Source NE'],
-                    'Destination NE': merged['Destination NE'],
-                    'Status': merged['_merge'].map({
-                        'left_only': 'Only in Original',
-                        'right_only': 'Only in Comparison',
-                        'both': 'In Both'
-                    }),
-                    'Original Source Port': merged['Source Port_Original'],
-                    'Original Dest Port': merged['Destination Port_Original'],
-                    'Compare Source Port': merged['Source Port_Compare'],
-                    'Compare Dest Port': merged['Destination Port_Compare'],
-                    'Port Match': (merged['Source Port_Original'] == merged['Source Port_Compare']) & 
-                                 (merged['Destination Port_Original'] == merged['Destination Port_Compare'])
-                })
-                
-                st.write("### Comparison Results:")
-                
-                # Color coding for the table
-                def highlight_rows(row):
-                    if row['Status'] == 'Only in Original':
-                        return ['background-color: #FFCCCB'] * len(row)
-                    elif row['Status'] == 'Only in Comparison':
-                        return ['background-color: #ADD8E6'] * len(row)
-                    elif not row['Port Match']:
-                        return ['background-color: #FFFF99'] * len(row)
-                    else:
-                        return [''] * len(row)
-                        
-                styled_results = results.style.apply(highlight_rows, axis=1)
-                st.dataframe(styled_results, use_container_width=True)
-                
-                # Download button
-                csv = results.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    "Download Comparison Results",
-                    csv,
-                    "network_comparison_results.csv",
-                    "text/csv"
-                )
-                
-            except Exception as e:
-                st.error(f"Error processing comparison file: {str(e)}")
+        # For matched rows, compare ports and show Sheet2 ports if different
+        comparison_df['Sheet2 Ports'] = ''
         
-        # Option 2: Find duplicates within the same file
-        st.subheader("Option 2: Find duplicate connections in same file")
-        if st.button("Check for Duplicates"):
-            duplicates = df[df.duplicated(subset=['Source NE', 'Destination NE'], keep=False)]
+        for idx, row in sheet1.iterrows():
+            # Find matching row in Sheet2
+            match = sheet2[
+                (sheet2['Source NE'] == row['Source NE']) & 
+                (sheet2['Destination NE'] == row['Destination NE'])
+            ]
             
-            if not duplicates.empty:
-                st.write("### Duplicate Connections Found:")
-                st.dataframe(duplicates.sort_values(['Source NE', 'Destination NE']))
+            if not match.empty:
+                sheet2_ports = f"Src: {match.iloc[0]['Source Port']}, Dst: {match.iloc[0]['Destination Port']}"
                 
-                # Count duplicates
-                dup_counts = duplicates.groupby(['Source NE', 'Destination NE']).size().reset_index(name='Count')
-                st.write("### Duplicate Counts:")
-                st.dataframe(dup_counts)
+                # Check if ports match
+                port_match = (row['Source Port'] == match.iloc[0]['Source Port']) and \
+                             (row['Destination Port'] == match.iloc[0]['Destination Port'])
                 
-                # Download duplicates
-                csv = duplicates.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    "Download Duplicates",
-                    csv,
-                    "duplicate_connections.csv",
-                    "text/csv"
-                )
-            else:
-                st.success("No duplicate connections found!")
-                
+                if not port_match:
+                    comparison_df.at[idx, 'Sheet2 Ports'] = sheet2_ports
+        
+        # Style function to highlight mismatches
+        def highlight_mismatches(row):
+            styles = [''] * len(row)
+            if row['Status'] == 'Mismatched':
+                styles[0] = 'background-color: red'  # Source NE
+                styles[1] = 'background-color: red'  # Destination NE
+            return styles
+        
+        # Apply styling
+        styled_df = comparison_df.style.apply(highlight_mismatches, axis=1)
+        
+        st.write("### Comparison Results:")
+        st.dataframe(styled_df, use_container_width=True)
+        
+        # Download button
+        csv = comparison_df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            "Download Comparison Results",
+            csv,
+            "ne_port_comparison.csv",
+            "text/csv"
+        )
+        
     except Exception as e:
         st.error(f"Error processing file: {str(e)}")
