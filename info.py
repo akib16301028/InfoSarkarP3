@@ -36,7 +36,7 @@ def compare_data_files(file1_path, file2_path):
     if not validate_columns(sheet1, "File 1") or not validate_columns(sheet2, "File 2"):
         return None
     
-    # Merge for comparison
+    # Merge for comparison - THIS IS WHERE THE FIX WAS MADE
     merged = pd.merge(
         sheet1, 
         sheet2, 
